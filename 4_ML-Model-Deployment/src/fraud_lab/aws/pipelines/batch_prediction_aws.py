@@ -4,6 +4,7 @@ import argparse
 import csv
 import io
 import json
+from datetime import date, datetime
 from typing import Any
 
 from src.aws_clients import client_error_code
@@ -34,6 +35,18 @@ def _csv_without_header(rows: list[dict[str, Any]], fieldnames: list[str]) -> st
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writerows(rows)
     return output.getvalue()
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _run_sagemaker_batch_transform(
@@ -141,7 +154,7 @@ def _run_sagemaker_batch_transform(
                 "CreateErrors": create_errors,
             },
         }
-        write_json(_metadata_path(config, "fraud_batch_transform_job.json"), metadata)
+        write_json(_metadata_path(config, "fraud_batch_transform_job.json"), _json_safe(metadata))
         return metadata
 
     description: dict[str, Any] = {"TransformJobStatus": "Submitted"}
@@ -171,7 +184,7 @@ def _run_sagemaker_batch_transform(
         "created_at": utc_now(),
         "description": description,
     }
-    write_json(_metadata_path(config, "fraud_batch_transform_job.json"), metadata)
+    write_json(_metadata_path(config, "fraud_batch_transform_job.json"), _json_safe(metadata))
     return metadata
 
 

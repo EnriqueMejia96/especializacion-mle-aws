@@ -89,6 +89,38 @@ Synthetic source data
 
 El resultado no crea Feature Groups todavia. Solo deja los datos organizados para que el paso 03 publique features en SageMaker Feature Store.
 
+## Relacion con DynamoDB y SQS
+
+En este paso solo ves salidas en S3 porque estas construyendo el Data Lake. DynamoDB y SQS ya fueron creados en el paso 01, pero todavia no reciben datos de negocio.
+
+| Recurso | Estado despues del paso 02 | Cuando se usa |
+| --- | --- | --- |
+| DynamoDB | Tabla creada, normalmente sin items de decision. | Paso 05, cuando se guarda la decision final de una transaccion online. |
+| SQS | Cola creada, normalmente con `0` mensajes. | Paso 05, cuando se emite un evento asincrono; paso 06, cuando se consume ese evento. |
+| S3 Data Lake | Raw, cleaned, curated, labels y artefactos de features disponibles. | Pasos 03, 07 y 08 para Feature Store, batch prediction y retraining. |
+
+Esta separacion es intencional. S3 guarda historia y datasets. DynamoDB guarda la decision operacional final de una transaccion. SQS transporta eventos pendientes de procesamiento posterior.
+
+## Flujo detallado del paso
+
+| Orden | Script | Input local | Input S3/AWS | Output local | Output S3/AWS | Proposito |
+|---:|---|---|---|---|---|---|
+| 1 | `fraud_lab.aws.pipelines.generate_synthetic_data_aws` | Contrato default en `src/fraud_lab/features/feature_contract.py` | Bucket y prefijo fraud | Ninguno obligatorio | Raw, cleaned, curated, labels y artefactos de preprocessing en S3 | Crear dataset base deterministico para el laboratorio. |
+| 2 | `fraud_lab.aws.pipelines.raw_to_cleaned_aws` | Ninguno | `lake/raw/*.jsonl` en S3 | Ninguno | `lake/cleaned/*.jsonl` | Reprocesar raw aplicando limpieza/canonicalizacion. |
+| 3 | `fraud_lab.aws.pipelines.cleaned_to_curated_aws` | Ninguno | `lake/cleaned/*.jsonl` en S3 | Ninguno | `lake/curated/*.csv` | Enriquecer transacciones con contexto de negocio. |
+
+## Paths principales
+
+| Tipo | Path | Quien lo crea | Quien lo consume |
+|---|---|---|---|
+| Raw historico | `s3://<bucket>/<FRAUD_S3_PREFIX>/lake/raw/historical_transactions.jsonl` | `generate_synthetic_data_aws` | `raw_to_cleaned_aws`, auditoria y replay. |
+| Raw batch | `s3://<bucket>/<FRAUD_S3_PREFIX>/lake/raw/transactions_to_score_raw.jsonl` | `generate_synthetic_data_aws` | `raw_to_cleaned_aws`. |
+| Muestra online | `s3://<bucket>/<FRAUD_S3_PREFIX>/lake/raw/online_transaction.json` | `generate_synthetic_data_aws` | Referencia conceptual del paso 05. |
+| Cleaned | `s3://<bucket>/<FRAUD_S3_PREFIX>/lake/cleaned/` | `generate_synthetic_data_aws`, `raw_to_cleaned_aws` | `cleaned_to_curated_aws`. |
+| Curated | `s3://<bucket>/<FRAUD_S3_PREFIX>/lake/curated/` | `generate_synthetic_data_aws`, `cleaned_to_curated_aws` | Paso 03, paso 07 y paso 08. |
+| Feature contract | `s3://<bucket>/<FRAUD_S3_PREFIX>/artifacts/preprocessing/feature_contract.yaml` | `generate_synthetic_data_aws` | Model Registry, online, batch y retraining. |
+| Feature order | `s3://<bucket>/<FRAUD_S3_PREFIX>/artifacts/preprocessing/feature_order.json` | `generate_synthetic_data_aws` | Ensamblaje del vector model-ready. |
+
 ## Prerrequisitos
 
 - Haber ejecutado `fraud-step 01`.
@@ -135,3 +167,16 @@ En S3, navega al bucket y prefijo:
 ```
 
 Abre un archivo raw y uno cleaned para comparar normalizacion de `amount`, `currency`, `location` y `timestamp`. Abre un curated CSV para confirmar que ya contiene contexto de negocio y no solo el payload original.
+
+## Ficha tecnica del paso
+
+| Componente | Ruta | Responsabilidad | Entradas | Salidas |
+|---|---|---|---|---|
+| Generador cloud | `src/fraud_lab/aws/pipelines/generate_synthetic_data_aws.py` | Crear datos deterministas y subir todas las capas iniciales a S3. | `default_contract`, datos sinteticos de `src/fraud_lab/pipelines/generate_synthetic_data.py`. | Raw, cleaned, curated, labels y artefactos de preprocessing. |
+| Limpieza cloud | `src/fraud_lab/aws/pipelines/raw_to_cleaned_aws.py` | Leer raw en S3 y aplicar `clean_transaction`. | `lake/raw/*.jsonl`. | `lake/cleaned/*.jsonl`. |
+| Curated cloud | `src/fraud_lab/aws/pipelines/cleaned_to_curated_aws.py` | Enriquecer cleaned con contexto de negocio. | `lake/cleaned/*.jsonl`. | `lake/curated/*.csv`. |
+| Data Lake helper | `src/fraud_lab/aws/s3_data_lake.py` | Encapsular lectura/escritura JSON, JSONL, CSV y texto en S3. | Configuracion fraud. | Objetos S3 bajo `FRAUD_S3_PREFIX`. |
+| Limpieza comun | `src/fraud_lab/common/cleaning.py` | Normalizar monto, moneda, timestamp, location y categoricas. | Evento raw. | Evento cleaned. |
+| Enriquecimiento | `src/fraud_lab/pipelines/cleaned_to_curated.py` | Agregar atributos de negocio. | Evento cleaned. | Fila curated. |
+
+Para modificar el dataset, cambia primero los generadores en `src/fraud_lab/pipelines/generate_synthetic_data.py` y luego la logica de limpieza/enriquecimiento en `src/fraud_lab/common/cleaning.py` o `src/fraud_lab/pipelines/cleaned_to_curated.py`.

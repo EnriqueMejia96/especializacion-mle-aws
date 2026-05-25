@@ -263,7 +263,6 @@ def full_cleanup_aws(
             "local": cleanup_local_generated(),
             "completed_at": utc_now(),
         }
-        write_json(LOCAL_OUTPUTS_DIR / "fraud_full_cleanup.json", result)
         print("Cleanup local fraud completado/solicitado:")
         print(json.dumps(result, indent=2, sort_keys=True))
         return result
@@ -283,7 +282,8 @@ def full_cleanup_aws(
     if delete_local:
         result["local"] = cleanup_local_generated()
 
-    write_json(config.lab_config.metadata_path("fraud_full_cleanup.json"), result)
+    if not delete_local:
+        write_json(config.lab_config.metadata_path("fraud_full_cleanup.json"), result)
     print("Full cleanup fraud completado/solicitado:")
     print(json.dumps(result, indent=2, sort_keys=True))
     return result

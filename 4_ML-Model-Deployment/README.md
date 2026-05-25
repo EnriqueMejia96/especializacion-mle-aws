@@ -15,6 +15,8 @@ Construir y validar un flujo de inferencia con:
 - DynamoDB para decisiones operacionales.
 - CloudWatch Logs y metricas para revisar endpoint y jobs.
 
+DynamoDB y SQS se crean en el paso 01, pero se usan realmente despues del scoring online. DynamoDB guarda la decision final por `transaction_id` para consulta operacional de baja latencia. SQS recibe un evento `fraud_prediction_completed` para que el paso 06 actualice S3 y Feature Store sin bloquear la respuesta del endpoint.
+
 ## Arquitectura
 
 Flujo online:
@@ -118,6 +120,8 @@ python -m src.lab_runner step 05
 python -m src.lab_runner step 06
 python -m src.lab_runner step 07
 python -m src.lab_runner step 08
+python -m src.lab_runner step 09   # cleanup conservador
+python -m src.lab_runner step 10   # cleanup total
 ```
 
 Ejecutar todo el flujo sin cleanup:
@@ -126,28 +130,49 @@ Ejecutar todo el flujo sin cleanup:
 python -m src.lab_runner all
 ```
 
+Al finalizar, el runner escribe el resumen de tiempos en:
+
+```text
+artifacts/local_outputs/lab_execution_times.json
+```
+
+Ese archivo incluye `started_at`, `finished_at`, `total_duration_seconds` y la duracion de cada paso ejecutado. Si un paso falla, el runner tambien intenta guardar el reporte parcial con el estado `failed`.
+
 Cleanup explicito de endpoint/model/Feature Groups:
 
 ```bash
 python -m src.lab_runner cleanup
 ```
 
+Cleanup total de recursos cloud del laboratorio y archivos locales generados:
+
+```bash
+python -m src.lab_runner full-cleanup
+```
+
 ## Scripts conservados
 
 Solo se mantienen scripts relacionados con la ruta de fraude:
 
-- `scripts/lab.sh`
-- `scripts/lab.ps1`
-- `scripts/deploy_infra.sh`
-- `scripts/deploy_infra.ps1`
-- `scripts/fraud_cloud_all.sh`
-- `scripts/fraud_cloud_all.ps1`
+| Script | Estado | Uso |
+| --- | --- | --- |
+| `scripts/lab.sh` | Activo | Wrapper Linux/macOS/Git Bash para `src.lab_runner`. |
+| `scripts/lab.ps1` | Activo | Wrapper Windows PowerShell para `src.lab_runner`. |
+| `scripts/deploy_infra.sh` | Activo | Atajo para ejecutar solo `python -m src.deploy_infra`. |
+| `scripts/deploy_infra.ps1` | Activo | Version PowerShell del despliegue de infraestructura. |
+| `scripts/fraud_cloud_all.sh` | Activo, delegado | Ejecuta `python -m src.lab_runner all`. |
+| `scripts/fraud_cloud_all.ps1` | Activo, delegado | Version PowerShell de `python -m src.lab_runner all`. |
+
+`fraud_cloud_all.sh` y `fraud_cloud_all.ps1` delegan en `python -m src.lab_runner all`. Esto evita mantener dos secuencias distintas y garantiza que tambien se genere `artifacts/local_outputs/lab_execution_times.json`.
+
+Los targets directos del `Makefile` como `fraud-register-model-aws`, `fraud-batch-predict-aws` o `fraud-build-retraining-dataset-aws` se conservan para debugging y reejecucion puntual. La secuencia oficial del estudiante sigue siendo `python -m src.lab_runner all` o `python -m src.lab_runner step <numero>`.
 
 Ejemplos:
 
 ```bash
 bash scripts/lab.sh list
 bash scripts/lab.sh step 05
+bash scripts/lab.sh full-cleanup
 bash scripts/fraud_cloud_all.sh
 ```
 
@@ -156,6 +181,7 @@ Windows PowerShell:
 ```powershell
 scripts\lab.ps1 list
 scripts\lab.ps1 step 05
+scripts\lab.ps1 full-cleanup
 scripts\fraud_cloud_all.ps1
 ```
 
@@ -169,6 +195,7 @@ make list
 make step STEP=05
 make all
 make cleanup
+make full-cleanup
 make fraud-cloud-all
 make fraud-full-cleanup-aws ARGS="--all"
 make test
@@ -197,6 +224,12 @@ python -m src.lab_runner cleanup
 ```
 
 Para borrar recursos adicionales de gobierno, S3, stack y archivos locales:
+
+```bash
+python -m src.lab_runner full-cleanup
+```
+
+Comando directo equivalente:
 
 ```bash
 python -m fraud_lab.aws.pipelines.full_cleanup_aws --all
