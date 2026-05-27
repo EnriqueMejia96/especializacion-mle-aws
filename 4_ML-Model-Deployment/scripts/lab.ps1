@@ -16,6 +16,9 @@ switch ($args[0]) {
     "cleanup" {
         python -m src.lab_runner cleanup
     }
+    "full-cleanup" {
+        python -m src.lab_runner full-cleanup
+    }
     "step" {
         if ($args.Count -lt 2) {
             throw "Use: scripts\lab.ps1 step <step-id>"

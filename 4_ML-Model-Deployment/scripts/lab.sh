@@ -18,6 +18,9 @@ case "$1" in
   cleanup)
     python -m src.lab_runner cleanup
     ;;
+  full-cleanup)
+    python -m src.lab_runner full-cleanup
+    ;;
   step)
     shift
     python -m src.lab_runner step "$@"

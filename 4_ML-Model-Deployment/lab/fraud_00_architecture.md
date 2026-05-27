@@ -87,6 +87,41 @@ El Model Registry tampoco es un endpoint. El Registry gobierna versiones aprobad
 
 SQS separa el tiempo de respuesta online del mantenimiento de datos. La prediccion debe responder rapido; la actualizacion del Data Lake y de features para futuras transacciones puede ocurrir segundos despues.
 
+## Rol de DynamoDB y SQS en la arquitectura
+
+DynamoDB y SQS aparecen juntos en el camino online, pero resuelven problemas distintos.
+
+| Servicio | Rol en el laboratorio | Por que no usar solo S3 o Feature Store |
+| --- | --- | --- |
+| DynamoDB | Guarda la decision operacional por `transaction_id`: score, decision, version de modelo/features, latencia y payload de respuesta. | S3 es durable pero no esta optimizado para consultas puntuales de baja latencia por transaccion. Feature Store guarda features, no decisiones finales del negocio. |
+| SQS | Recibe un evento `fraud_prediction_completed` despues de la prediccion online. Ese evento activa procesamiento asincrono en el paso 06. | El endpoint no debe esperar a que se actualicen raw/cleaned/curated ni Feature Store. La cola desacopla la respuesta online del mantenimiento posterior. |
+
+La diferencia practica es:
+
+1. DynamoDB responde preguntas operacionales: "Que decision tuvo la transaccion `T001`?".
+2. SQS responde al patron de integracion: "Hay trabajo pendiente despues de puntuar `T001`?".
+3. S3 conserva evidencia y datasets historicos.
+4. Feature Store conserva features ML-ready para predicciones futuras.
+
+En una arquitectura productiva, una aplicacion de pagos podria consultar DynamoDB inmediatamente despues del scoring para mostrar o auditar la decision. En paralelo, consumidores asincronos leerian SQS para actualizar Data Lake, recalcular features, disparar alertas, enviar eventos a monitoreo o alimentar procesos antifraude posteriores.
+
+## Flujo detallado del paso
+
+| Orden | Script | Input local | Input S3/AWS | Output local | Output S3/AWS | Proposito |
+|---:|---|---|---|---|---|---|
+| 1 | `src.lab_runner` | Argumento `step 00` | Ninguno | Mensaje con la ruta del documento | Ninguno | Confirmar que la ruta fraud esta disponible. |
+| 2 | Lectura de `lab/fraud_00_architecture.md` | Documentacion del laboratorio | Ninguno | Comprension del flujo online, async, batch y retraining | Ninguno | Alinear el mapa mental antes de crear recursos. |
+
+## Paths principales
+
+| Tipo | Path | Contenido | Uso posterior |
+|---|---|---|---|
+| Documento actual | `lab/fraud_00_architecture.md` | Arquitectura y responsabilidades por servicio. | Referencia durante todos los pasos. |
+| Configuracion editable | `.env` | Profile, region, nombres y flags del laboratorio. | Pasos 01-09. |
+| Template de configuracion | `.env.example` | Defaults seguros para copiar a `.env`. | Setup inicial. |
+| Runner | `src/lab_runner.py` | Secuencia oficial de pasos fraud. | Ejecucion paso a paso y `all`. |
+| Codigo de dominio | `src/fraud_lab/` | Limpieza, features, scoring y pipelines del caso de fraude. | Pasos cloud posteriores. |
+
 ## Prerrequisitos
 
 - Haber instalado dependencias con `pip install -r requirements.txt`.
@@ -124,3 +159,13 @@ Debes ver los pasos `00` a `09` de la ruta fraud.
 ## Validacion en consola AWS
 
 No aplica para este paso. Todavia no se crea infraestructura.
+
+## Ficha tecnica del paso
+
+| Componente | Ruta | Responsabilidad | Entradas | Salidas |
+|---|---|---|---|---|
+| Runner del lab | `src/lab_runner.py` | Registrar el paso `00-fraud-architecture` y mostrar la referencia documental. | Comando `python -m src.lab_runner step 00`. | Mensaje en terminal. |
+| Documento de arquitectura | `lab/fraud_00_architecture.md` | Explicar limites entre Data Lake, Feature Store, Model Registry, endpoint, SQS y DynamoDB. | Conceptos del caso de fraude. | Criterios para interpretar los pasos 01-09. |
+| Configuracion base | `.env.example` | Mostrar variables que controlan cuenta, region, recursos y comportamiento del endpoint/batch. | Ninguno. | Plantilla para `.env`. |
+
+Para modificar comportamiento posterior, no cambies este documento como fuente de verdad tecnica. Cambia `.env` para configuracion, `src/lab_runner.py` para la secuencia de ejecucion y `src/fraud_lab/` para logica de negocio.

@@ -3,11 +3,26 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-from .config import ROOT_DIR
+from .config import LOCAL_OUTPUTS_DIR, ROOT_DIR, utc_now, write_json
 
 Command = tuple[str, ...]
+
+
+def resolve_python_executable() -> str:
+    """Prefer the lab-local virtualenv for child commands when it exists."""
+    candidates = (
+        ROOT_DIR / ".venv" / "Scripts" / "python.exe",
+        ROOT_DIR / ".venv" / "bin" / "python",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
 
 
 @dataclass(frozen=True)
@@ -118,14 +133,25 @@ FRAUD_CLEANUP_STEP = LabStep(
     ),
 )
 
+FRAUD_FULL_CLEANUP_STEP = LabStep(
+    "10",
+    "fraud-full-cleanup",
+    "Cleanup total de recursos cloud y archivos locales del laboratorio",
+    (
+        ("message", "Documentacion: lab/fraud_09_cleanup.md"),
+        ("fraud_lab.aws.pipelines.full_cleanup_aws", "--all"),
+    ),
+)
+
 
 def run_command(command: Command) -> None:
     if command[0] == "message":
         print(command[1], flush=True)
         return
-    print(f"$ {sys.executable} -m {' '.join(command)}", flush=True)
+    python_executable = resolve_python_executable()
+    print(f"$ {python_executable} -m {' '.join(command)}", flush=True)
     try:
-        subprocess.run([sys.executable, "-m", *command], cwd=ROOT_DIR, check=True)
+        subprocess.run([python_executable, "-m", *command], cwd=ROOT_DIR, check=True)
     except subprocess.CalledProcessError as exc:
         joined = " ".join(command)
         raise SystemExit(
@@ -137,7 +163,7 @@ def run_command(command: Command) -> None:
 def find_fraud_step(identifier: str) -> LabStep:
     normalized = identifier.strip().lower()
     normalized = normalized.removeprefix("fraud-").removeprefix("f")
-    for step in (*FRAUD_STEPS, FRAUD_CLEANUP_STEP):
+    for step in (*FRAUD_STEPS, FRAUD_CLEANUP_STEP, FRAUD_FULL_CLEANUP_STEP):
         aliases = {
             step.number,
             step.slug,
@@ -148,7 +174,9 @@ def find_fraud_step(identifier: str) -> LabStep:
         }
         if identifier.strip().lower() in aliases or normalized in aliases:
             return step
-    valid = ", ".join(step.key for step in (*FRAUD_STEPS, FRAUD_CLEANUP_STEP))
+    valid = ", ".join(
+        step.key for step in (*FRAUD_STEPS, FRAUD_CLEANUP_STEP, FRAUD_FULL_CLEANUP_STEP)
+    )
     raise SystemExit(f"Unknown step '{identifier}'. Valid fraud steps: {valid}")
 
 
@@ -156,6 +184,66 @@ def run_step(step: LabStep) -> None:
     print(f"\n=== Lab 04 {step.key}: {step.title} ===", flush=True)
     for command in step.commands:
         run_command(command)
+
+
+def _step_timing_payload(step: LabStep, started_at: str) -> dict[str, Any]:
+    return {
+        "number": step.number,
+        "slug": step.slug,
+        "key": step.key,
+        "title": step.title,
+        "started_at": started_at,
+        "finished_at": "",
+        "duration_seconds": 0.0,
+        "status": "running",
+    }
+
+
+def run_timed_step(step: LabStep, timings: list[dict[str, Any]]) -> None:
+    started_at = utc_now()
+    started_monotonic = time.monotonic()
+    payload = _step_timing_payload(step, started_at)
+    try:
+        run_step(step)
+        payload["status"] = "succeeded"
+    except BaseException as exc:
+        payload["status"] = "failed"
+        payload["error"] = str(exc)
+        raise
+    finally:
+        payload["finished_at"] = utc_now()
+        payload["duration_seconds"] = round(time.monotonic() - started_monotonic, 3)
+        timings.append(payload)
+
+
+def write_all_execution_times(
+    *,
+    timings: list[dict[str, Any]],
+    started_at: str,
+    total_started_monotonic: float,
+    status: str,
+) -> Path:
+    total_duration = round(time.monotonic() - total_started_monotonic, 3)
+    payload = {
+        "lab": "04-model-deployment-fraud",
+        "command": "python -m src.lab_runner all",
+        "status": status,
+        "started_at": started_at,
+        "finished_at": utc_now(),
+        "total_duration_seconds": total_duration,
+        "steps_total": len(timings),
+        "steps_succeeded": sum(1 for item in timings if item["status"] == "succeeded"),
+        "steps_failed": sum(1 for item in timings if item["status"] == "failed"),
+        "steps": timings,
+        "cleanup_note": (
+            "El comando all no ejecuta cleanup. Usa python -m src.lab_runner cleanup "
+            "o python -m src.lab_runner full-cleanup al terminar."
+        ),
+    }
+    path = LOCAL_OUTPUTS_DIR / "lab_execution_times.json"
+    write_json(path, payload)
+    print(f"\nExecution timing report written to {path}", flush=True)
+    return path
 
 
 def list_steps() -> None:
@@ -167,6 +255,7 @@ def list_fraud_steps() -> None:
     for step in FRAUD_STEPS:
         print(f"{step.key}: {step.title}")
     print(f"{FRAUD_CLEANUP_STEP.key}: {FRAUD_CLEANUP_STEP.title}")
+    print(f"{FRAUD_FULL_CLEANUP_STEP.key}: {FRAUD_FULL_CLEANUP_STEP.title}")
 
 
 def run_all() -> None:
@@ -174,11 +263,27 @@ def run_all() -> None:
 
 
 def run_fraud_all() -> None:
-    for step in FRAUD_STEPS:
-        run_step(step)
+    timings: list[dict[str, Any]] = []
+    started_at = utc_now()
+    total_started_monotonic = time.monotonic()
+    status = "succeeded"
+    try:
+        for step in FRAUD_STEPS:
+            run_timed_step(step, timings)
+    except BaseException:
+        status = "failed"
+        raise
+    finally:
+        write_all_execution_times(
+            timings=timings,
+            started_at=started_at,
+            total_started_monotonic=total_started_monotonic,
+            status=status,
+        )
     print(
         "\nRuta fraud completada. El cleanup de Feature Groups esta separado: "
-        "python -m src.lab_runner fraud-cleanup"
+        "python -m src.lab_runner fraud-cleanup. Para teardown total: "
+        "python -m src.lab_runner fraud-full-cleanup"
     )
 
 
@@ -190,11 +295,13 @@ def main() -> None:
     step_parser = subparsers.add_parser("step", help="Run one lab step by number or name.")
     step_parser.add_argument("identifier", help="Example: 05, fraud-online-score")
     subparsers.add_parser("cleanup", help="Run fraud cleanup without deleting governance resources.")
+    subparsers.add_parser("full-cleanup", help="Run full fraud cloud/local teardown.")
     subparsers.add_parser("fraud-list", help="List AWS fraud architecture steps.")
     subparsers.add_parser("fraud-all", help="Run the AWS fraud architecture flow without cleanup.")
     fraud_step_parser = subparsers.add_parser("fraud-step", help="Run one fraud step by number or name.")
     fraud_step_parser.add_argument("identifier", help="Example: 05, fraud-online-score")
     subparsers.add_parser("fraud-cleanup", help="Delete fraud Feature Groups created by the lab.")
+    subparsers.add_parser("fraud-full-cleanup", help="Delete all fraud lab resources and local outputs.")
     args = parser.parse_args()
 
     if args.command == "list":
@@ -205,6 +312,8 @@ def main() -> None:
         run_step(find_fraud_step(args.identifier))
     elif args.command == "cleanup":
         run_step(FRAUD_CLEANUP_STEP)
+    elif args.command == "full-cleanup":
+        run_step(FRAUD_FULL_CLEANUP_STEP)
     elif args.command == "fraud-list":
         list_fraud_steps()
     elif args.command == "fraud-all":
@@ -213,6 +322,8 @@ def main() -> None:
         run_step(find_fraud_step(args.identifier))
     elif args.command == "fraud-cleanup":
         run_step(FRAUD_CLEANUP_STEP)
+    elif args.command == "fraud-full-cleanup":
+        run_step(FRAUD_FULL_CLEANUP_STEP)
 
 
 if __name__ == "__main__":

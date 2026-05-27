@@ -14,9 +14,8 @@ from fraud_lab.aws.clients import FraudAwsClients
 from fraud_lab.aws.config import FraudAwsConfig, load_fraud_aws_config
 from fraud_lab.features.feature_contract import FEATURE_VERSION, MODEL_VERSION, default_contract
 
-ARTIFACT_PACKAGING_VERSION = "fraud-sklearn-submit-directory-v6"
+ARTIFACT_PACKAGING_VERSION = "fraud-sklearn-split-model-code-v7"
 SAGEMAKER_ENTRY_POINT = "fraud_entry.py"
-SAGEMAKER_ENTRY_MODULE = "fraud_entry"
 
 INFERENCE_SOURCE_FILES = (
     SAGEMAKER_ENTRY_POINT,
@@ -28,15 +27,6 @@ INFERENCE_SOURCE_FILES = (
     "requirements.txt",
     "setup.py",
 )
-
-ENTRY_PACKAGE_FILES = (
-    "model_fn.py",
-    "input_fn.py",
-    "predict_fn.py",
-    "output_fn.py",
-)
-
-INFERENCE_PACKAGE_FILES = ENTRY_PACKAGE_FILES
 
 
 def _fraud_training_rows() -> tuple[list[list[float]], list[int]]:
@@ -108,11 +98,6 @@ def _write_fraud_model_tarball(model_dir: Path, artifact_path: Path) -> Path:
     with tarfile.open(artifact_path, "w:gz") as tar:
         tar.add(model_dir / "model.joblib", arcname="model.joblib")
         tar.add(model_dir / "model_metadata.json", arcname="model_metadata.json")
-        for file_name in INFERENCE_SOURCE_FILES:
-            tar.add(model_dir / file_name, arcname=file_name)
-        tar.add(model_dir / SAGEMAKER_ENTRY_MODULE, arcname=SAGEMAKER_ENTRY_MODULE)
-        tar.add(model_dir / "inference", arcname="inference")
-        tar.add(model_dir / "code", arcname="code")
     return artifact_path
 
 
@@ -155,19 +140,6 @@ def create_fraud_model_artifact(config: FraudAwsConfig | None = None) -> Path:
     inference_dir = Path(__file__).resolve().parent / "sagemaker_inference"
     for file_name in INFERENCE_SOURCE_FILES:
         shutil.copy2(inference_dir / file_name, code_dir / file_name)
-        shutil.copy2(inference_dir / file_name, model_dir / file_name)
-    for base_dir in (model_dir, code_dir):
-        entry_package_dir = base_dir / SAGEMAKER_ENTRY_MODULE
-        entry_package_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(inference_dir / "fraud_entry.py", entry_package_dir / "__init__.py")
-        for file_name in ENTRY_PACKAGE_FILES:
-            shutil.copy2(inference_dir / file_name, entry_package_dir / file_name)
-
-        package_dir = base_dir / "inference"
-        package_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(inference_dir / "inference.py", package_dir / "__init__.py")
-        for file_name in INFERENCE_PACKAGE_FILES:
-            shutil.copy2(inference_dir / file_name, package_dir / file_name)
 
     metadata = {
         "model_version": MODEL_VERSION,

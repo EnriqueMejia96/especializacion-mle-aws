@@ -8,9 +8,7 @@ from fraud_lab.aws.config import load_fraud_aws_config
 from fraud_lab.aws.feature_store import AwsFeatureStore, _feature_type
 from fraud_lab.aws.model_registry import (
     ARTIFACT_PACKAGING_VERSION,
-    INFERENCE_PACKAGE_FILES,
     INFERENCE_SOURCE_FILES,
-    SAGEMAKER_ENTRY_MODULE,
     SAGEMAKER_ENTRY_POINT,
     _fraud_training_rows,
     _write_fraud_model_tarball,
@@ -127,7 +125,7 @@ def test_fraud_model_registry_training_rows_match_feature_contract():
     assert set(labels) == {0, 1}
 
 
-def test_fraud_model_artifact_packages_inference_for_sagemaker_sklearn(tmp_path):
+def test_fraud_model_artifact_and_source_dir_are_split_for_sagemaker_sklearn(tmp_path):
     model_dir = tmp_path / "model"
     code_dir = model_dir / "code"
     code_dir.mkdir(parents=True)
@@ -137,26 +135,7 @@ def test_fraud_model_artifact_packages_inference_for_sagemaker_sklearn(tmp_path)
         encoding="utf-8",
     )
     for file_name in INFERENCE_SOURCE_FILES:
-        (model_dir / file_name).write_text("# fake inference file\n", encoding="utf-8")
         (code_dir / file_name).write_text("# fake inference file\n", encoding="utf-8")
-    for base_dir in (model_dir, code_dir):
-        entry_package_dir = base_dir / SAGEMAKER_ENTRY_MODULE
-        entry_package_dir.mkdir(parents=True)
-        (entry_package_dir / "__init__.py").write_text(
-            "# fake entry package\n",
-            encoding="utf-8",
-        )
-        for file_name in INFERENCE_PACKAGE_FILES:
-            (entry_package_dir / file_name).write_text(
-                "# fake entry package module\n",
-                encoding="utf-8",
-            )
-
-        package_dir = base_dir / "inference"
-        package_dir.mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("# fake package\n", encoding="utf-8")
-        for file_name in INFERENCE_PACKAGE_FILES:
-            (package_dir / file_name).write_text("# fake package module\n", encoding="utf-8")
 
     artifact_path = _write_fraud_model_tarball(
         model_dir,
@@ -171,16 +150,9 @@ def test_fraud_model_artifact_packages_inference_for_sagemaker_sklearn(tmp_path)
 
     assert "model.joblib" in names
     assert "model_metadata.json" in names
-    assert SAGEMAKER_ENTRY_POINT in names
-    assert f"code/{SAGEMAKER_ENTRY_POINT}" in names
-    assert f"{SAGEMAKER_ENTRY_MODULE}/__init__.py" in names
-    assert f"code/{SAGEMAKER_ENTRY_MODULE}/__init__.py" in names
-    assert "inference.py" in names
-    assert "code/inference.py" in names
-    assert "inference/__init__.py" in names
-    assert "code/inference/__init__.py" in names
-    assert "setup.py" in names
-    assert "code/setup.py" in names
+    assert SAGEMAKER_ENTRY_POINT not in names
+    assert "code/inference.py" not in names
+    assert "setup.py" not in names
     assert metadata["artifact_packaging_version"] == ARTIFACT_PACKAGING_VERSION
 
     source_artifact_path = _write_fraud_source_dir_tarball(
@@ -191,6 +163,7 @@ def test_fraud_model_artifact_packages_inference_for_sagemaker_sklearn(tmp_path)
         source_names = set(tar.getnames())
 
     assert SAGEMAKER_ENTRY_POINT in source_names
-    assert f"{SAGEMAKER_ENTRY_MODULE}/__init__.py" in source_names
+    assert set(INFERENCE_SOURCE_FILES) <= source_names
     assert "setup.py" in source_names
     assert all(not name.startswith("code/") for name in source_names)
+    assert "model.joblib" not in source_names
